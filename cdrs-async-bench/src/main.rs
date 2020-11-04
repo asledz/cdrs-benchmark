@@ -5,9 +5,13 @@ use anyhow::Result;
 use getopts::Options;
 use std::env;
 use std::sync::Arc;
+
 use cdrs_async::{authenticators::NoneAuthenticator, query::QueryExecutor, Compression, Session, TransportTcp};
+use cassandra_proto::{query::QueryValues, types::value::Value};
 use std::pin::Pin;
 use std::sync::Mutex;
+use std::collections::HashMap;
+use async_weighted_semaphore::Semaphore;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Workload {
@@ -120,7 +124,7 @@ async fn setup_schema(mut session: Session<TransportTcp>, replication_factor: u3
 }
 
 async fn run_bench(
-    session: Arc<Pin<Session<TransportTcp>>>,
+    session: Session<TransportTcp>,
     concurrency: u64,
     mut tasks: u64,
     workload: Workload,
@@ -130,16 +134,18 @@ async fn run_bench(
     }
 
     let sem = Arc::new(Semaphore::new(concurrency as usize));
-    let session = Arc::new(session);
+    let session = Arc::new(Mutex::new(session));
 
     let mut prev_percent = -1;
 
+    /*
     let stmt_read = session
         .prepare("SELECT v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?")
         .await?;
     let stmt_write = session
         .prepare("INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)")
         .await?;
+    */
 
     let mut i = 0;
     let batch_size = 256;
@@ -151,25 +157,34 @@ async fn run_bench(
             println!("Progress: {}%", curr_percent);
         }
         let session = session.clone();
-        let permit = sem.clone().acquire_owned().await;
+        //let permit = sem.clone().acquire_owned().await;
 
-        let stmt_read = stmt_read.clone();
-        let stmt_write = stmt_write.clone();
-        tokio::task::spawn(async move {
+        //let stmt_read = stmt_read.clone();
+        //let stmt_write = stmt_write.clone();
+        async_std::task::spawn(async move {
             let begin = i;
             let end = std::cmp::min(begin + batch_size, tasks);
 
             for i in begin..end {
                 if workload == Workload::Writes || workload == Workload::ReadsAndWrites {
-                    let result = session
-                        .execute(&stmt_write, &scylla::values!(i, 2 * i, 3 * i))
-                        .await;
+                    let query_values = {
+                        let mut values_map: HashMap<String, Value> = HashMap::new();
+                        QueryValues::NamedValues(values_map)
+                    };
+                    
+                    let locked_session: &mut Session<TransportTcp> = &mut session.lock().unwrap();
+                    let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
+                    let query_future = Pin::new(locked_session).query_with_values(insert_struct_cql, query_values);
+                    
+                    let result = query_future.await;
+                    
                     if result.is_err() {
                         eprintln!("Error: {:?}", result.unwrap_err());
                         continue; // The row may not be available for reading, so skip
                     }
                 }
-
+                
+                /*
                 if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
                     let result = session.execute(&stmt_read, &scylla::values!(i)).await;
                     match result {
@@ -188,9 +203,10 @@ async fn run_bench(
                         }
                     }
                 }
+                */
             }
 
-            let _permit = permit;
+            //let _permit = permit;
         });
 
         i += batch_size;

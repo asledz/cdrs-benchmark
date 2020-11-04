@@ -9,6 +9,9 @@ edition = "2018"
 [dependencies]
 cdrs-async = "0.1.0-alpha.0"
 async-std = { version = "1.4.0" }
+async-weighted-semaphore = "0.1.0"
 futures = "0.3"
 anyhow = "1.0"
 getopts = "0.2.21"
+cdrs_helpers_derive = "0.3.3"
+cassandra-proto = "0.1"
