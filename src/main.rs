@@ -145,19 +145,6 @@ fn setup_schema(session: CurrentSession, replication_factor: u32) -> Result<()> 
 
 
 
-static SELECT_QUERY: &'static str = r#"
-  SELECT v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?;
-"#;
-
-pub fn add_query(
-  session: &mut CurrentSession,
-  measurement: TemperatureMeasurement,
-) -> CDRSResult<()> {
-  session
-    .query_with_values(SELECT_QUERY, measurement.into_query_values())
-    .map(|_| (()))
-}
-
 async fn run_bench(
     session: CurrentSession,
     concurrency: u64,
@@ -201,6 +188,13 @@ async fn run_bench(
 
             for i in begin..end {
                 if workload == Workload::Writes || workload == Workload::ReadsAndWrites {
+
+                    
+                        let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
+
+                        session
+                            .query_with_values(insert_struct_cql, row.into_query_values())
+                            .expect("insert");
                 //     // let result = session
                 //     //     .execute(&stmt_write, &scylla::values!(i, 2 * i, 3 * i))
                 //     //     .await;
@@ -227,7 +221,7 @@ async fn run_bench(
                 //             eprintln!("Error: {:?}", err);
                 //         }
                 //     }
-                }
+                // }
             }
 
             let _permit = permit;
