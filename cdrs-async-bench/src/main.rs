@@ -9,9 +9,10 @@ use std::sync::Arc;
 use cdrs_async::{authenticators::NoneAuthenticator, query::QueryExecutor, Compression, Session, TransportTcp};
 use cassandra_proto::{query::QueryValues, types::value::Value};
 use std::pin::Pin;
-use std::sync::Mutex;
+use async_std::sync::Mutex;
 use std::collections::HashMap;
-use async_weighted_semaphore::Semaphore;
+// TODO - find better semaphore for async_std because this one doesnt have acquire_owned() :(
+use async_weighted_semaphore::Semaphore; 
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Workload {
@@ -85,7 +86,7 @@ fn main() {
         };
 
         let authenticator_strategy = NoneAuthenticator {};
-        let mut session = Session::connect(
+        let session = Session::connect(
             "127.0.0.1:9042",
             compression,
             authenticator_strategy.into(),
@@ -157,7 +158,7 @@ async fn run_bench(
             println!("Progress: {}%", curr_percent);
         }
         let session = session.clone();
-        //let permit = sem.clone().acquire_owned().await;
+        //let permit = sem.clone().acquire().await;
 
         //let stmt_read = stmt_read.clone();
         //let stmt_write = stmt_write.clone();
@@ -169,13 +170,25 @@ async fn run_bench(
                 if workload == Workload::Writes || workload == Workload::ReadsAndWrites {
                     let query_values = {
                         let mut values_map: HashMap<String, Value> = HashMap::new();
+                        values_map.insert("pk".to_string(), Value::from(i));
+                        values_map.insert("v1".to_string(), Value::from(2*i));
+                        values_map.insert("v2".to_string(), Value::from(3*i));
                         QueryValues::NamedValues(values_map)
                     };
                     
-                    let locked_session: &mut Session<TransportTcp> = &mut session.lock().unwrap();
+                    let locked_session: &mut Session<TransportTcp> = &mut *session.lock().await;
                     let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
                     let query_future = Pin::new(locked_session).query_with_values(insert_struct_cql, query_values);
                     
+                    /* This is impossible because .await still uses the lock()
+                    // That means no multiple streams possible??
+                    let query_future = {
+                        let locked_session: &mut Session<TransportTcp> = &mut *session.lock().await;
+                        let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
+                        Pin::new(locked_session).query_with_values(insert_struct_cql, query_values)
+                    };
+                    */
+
                     let result = query_future.await;
                     
                     if result.is_err() {
