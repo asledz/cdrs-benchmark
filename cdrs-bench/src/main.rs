@@ -144,6 +144,18 @@ fn setup_schema(session: CurrentSession, replication_factor: u32) -> Result<()> 
 }
 
 
+struct RowStruct {
+    pk: u64,
+    v1: u64,
+    v2: u64,
+}
+
+
+impl RowStruct {
+    fn into_query_values(self) -> QueryValues {
+        query_values!("pk" => self.pk, "v1" => self.v1, "v2" => self.v2)
+    }
+}
 
 async fn run_bench(
     session: CurrentSession,
@@ -182,16 +194,18 @@ async fn run_bench(
 
         // let stmt_read = stmt_read.clone();
         // let stmt_write = stmt_write.clone();
-        tokio::task::spawn(async move {
+        // tokio::task::spawn(async move {
             let begin = i;
             let end = std::cmp::min(begin + batch_size, tasks);
 
             for i in begin..end {
                 if workload == Workload::Writes || workload == Workload::ReadsAndWrites {
-
-                    
+                        let row = RowStruct {
+                            pk: i,
+                            v1: 2 * i,
+                            v2: 3 * i,
+                        };
                         let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
-
                         session
                             .query_with_values(insert_struct_cql, row.into_query_values())
                             .expect("insert");
@@ -204,7 +218,9 @@ async fn run_bench(
                 //     // }
                 }
 
-                // if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
+                if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
+                        let slect_cql = "SELECT pk, v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?";
+                        let rows session.query_with_values(slect_cql, query_values!(i)).expect("query").get_body().expect("get_body").into_rows().expect("into rows");
                 //     let result = session.execute(&stmt_read, &scylla::values!(i)).await;
                 //     match result {
                 //         Ok(result) => {
@@ -221,13 +237,13 @@ async fn run_bench(
                 //             eprintln!("Error: {:?}", err);
                 //         }
                 //     }
-                // }
+                }
             }
 
             let _permit = permit;
-        });
+        // });
 
-        // i += batch_size;
+        i += batch_size;
     }
 
     // Wait for all in-flight requests to finish
