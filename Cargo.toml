@@ -1,18 +1,7 @@
-[package]
-name = "cdrs-benchmark"
-version = "0.1.0"
-authors = ["asledz <anita.gaja.sledz@gmail.com>"]
-edition = "2018"
+[workspace]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+members = [
+    "cdrs-bench",
+    "cdrs-async-bench",
+]
 
-[dependencies]
-anyhow = "1.0.33"
-futures = "0.3.6"
-getopts = "0.2.21"
-cdrs = { version = "2" }
-cdrs_helpers_derive = "0.3.3"
-tokio = { version = "0.3.0", features = ["full", "rt-multi-thread"] }
-maplit = "1.0.2"
-uuid = "0.7"
-time = "0.1"
