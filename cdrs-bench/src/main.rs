@@ -105,14 +105,22 @@ async fn main() -> Result<()> {
     let tasks = matches.opt_get_default("tasks", 1_000_000u64)?;
     let replication_factor = matches.opt_get_default("replication-factor", 3)?;
 
+    let workload = match matches.opt_str("workload").as_deref() {
+        Some("write") => Workload::Writes,
+        Some("read") => Workload::Reads,
+        Some("mixed") => Workload::ReadsAndWrites,
+        None => Workload::Writes,
+        Some(c) => return Err(anyhow!("bad workload type: {}", c)),
+    };
     
     let mut session = connect_to_db();
 
     if matches.opt_present("prepare") {
-        setup_schema(session, replication_factor); }
-    // } else {
-    //     run_bench(session, concurrency, tasks, workload).await?;
-    // }
+        setup_schema(session, replication_factor); 
+    } else {
+        println!("Start benchmark");
+        run_bench(session, concurrency, tasks, workload);
+    }
 
     Ok(())
 }
@@ -157,7 +165,7 @@ impl RowStruct {
     }
 }
 
-async fn run_bench(
+fn run_bench(
     session: CurrentSession,
     concurrency: u64,
     mut tasks: u64,
@@ -167,34 +175,25 @@ async fn run_bench(
         tasks /= 2;
     }
 
-    let sem = Arc::new(Semaphore::new(concurrency as usize));
+    // let sem = Arc::new(Semaphore::new(concurrency as usize));
     /*let session = Arc::new(session);*/
 
     let mut prev_percent = -1;
 
-    // let stmt_read = session
-    //     .prepare("SELECT v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?")
-    //     .await?;
-    // let stmt_write = session
-    //     .prepare("INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)")
-    //     .await?;
-
     let mut i = 0;
     let batch_size = 256;
+
+    println!("tasks {}", tasks);
 
     while i < tasks {
         let curr_percent = (100 * i) / tasks;
         if prev_percent < curr_percent as i32 {
             prev_percent = curr_percent as i32;
-            println!("Progress: {}%", curr_percent);
+            
+            println!("Progress: {}", curr_percent);
         }
-        // let session = session.clone();
-        let permit = sem.clone().acquire_owned().await;
 
-
-        // let stmt_read = stmt_read.clone();
-        // let stmt_write = stmt_write.clone();
-        // tokio::task::spawn(async move {
+        // let permit = sem.clone().acquire_owned().await;
             let begin = i;
             let end = std::cmp::min(begin + batch_size, tasks);
 
@@ -209,47 +208,23 @@ async fn run_bench(
                         session
                             .query_with_values(insert_struct_cql, row.into_query_values())
                             .expect("insert");
-                //     // let result = session
-                //     //     .execute(&stmt_write, &scylla::values!(i, 2 * i, 3 * i))
-                //     //     .await;
-                //     // if result.is_err() {
-                //     //     eprintln!("Error: {:?}", result.unwrap_err());
-                //     //     continue; // The row may not be available for reading, so skip
-                //     // }
                 }
 
                 if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
                         let slect_cql = "SELECT pk, v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?";
                         let rows = session.query_with_values(slect_cql, query_values!(i)).expect("query").get_body().expect("get body").into_rows().expect("into rows");
-                //     let result = session.execute(&stmt_read, &scylla::values!(i)).await;
-                //     match result {
-                //         Ok(result) => {
-                //             let row = result.unwrap().into_iter().next().unwrap();
-                //             assert_eq!(
-                //                 row.columns,
-                //                 vec![
-                //                     Some(CQLValue::BigInt(2 * i as i64)),
-                //                     Some(CQLValue::BigInt(3 * i as i64))
-                //                 ]
-                //             )
-                //         }
-                //         Err(err) => {
-                //             eprintln!("Error: {:?}", err);
-                //         }
-                //     }
                 }
             }
 
-            let _permit = permit;
-        // });
+            // let _permit = permit;
 
         i += batch_size;
     }
 
     // Wait for all in-flight requests to finish
-    for _ in 0..concurrency {
-        sem.acquire().await.forget();
-    }
+    // for _ in 0..concurrency {
+    //     sem.acquire().await.forget();
+    // }
 
     println!("Done!");
     Ok(())
