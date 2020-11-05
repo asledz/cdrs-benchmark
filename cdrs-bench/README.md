@@ -1,73 +1,64 @@
 # cdrs-benchmark
 
 
-# Opis benchmarku
+## About benchmark
 
-Benchmark ma za zadanie wykonać określoną ilość komend CQL-owych (CQL statement) w jak najkrótszym czasie.
+Benchmark will execute the specified amount of CQL statements. 
 
-Będziemy mierzyć czas użyty przez benchmark poprzez komendę `time` z Linuxa.
+The time used by the benchmark will be measured using Linux's command `time`.
 
-## Parametry
 
-Zdefiniowane są następujące parametry, które można określić przed uruchomieniem. Oto najważniejsze z nich:
+## Parameters
 
-- ilość operacji do wykonania,
-- współbieżność - czyli ile operacji może się wykonywać naraz,
-- tryb (write, read, albo mixed - opisane niżej)
+There are few parameters defined before running the benchmark. Most important ones are:
 
-Pozostałe parametry tyczą się konfiguracji bazy danych i tego, jak są wykonywane zapytania:
+- number of operations
+- concurrency - how many operations can run at the same time
+- workload (write, read or mixed - specified below)
 
-- replication factor - parametr keyspace'a, opisany niżej,
-- consistency level - consistency level użyty do zapisów i odczytów.
-- compression - jakiego algorytmu kompresji użyć do komunikacji z bazą danych.
+Other parameters specify the configuration of the database, and how the tasks are handled.
+
+- replication factor - keyspace parameter, specified below.
+- consistency level - consistency level used for reads and writes.
+- compression - compression algorithm used in the database.
 
 ### Schema
 
-Benchmark powinien operować na keyspace o następującej schemie:
+Benchmark should operate on keyspace created with this schema:
 
     CREATE KEYSPACE IF NOT EXISTS ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': (replication factor)}
 
-gdzie (replication factor) to parametr podany do benchmarka.
+where (replication factor) is a parameter passed to the benchmark.
 
-Wszystkie operacje wykonywane są na tej samej tabelce, o konkretnej schemie:
+All of the operations are running on the same table with this schema:
 
     CREATE TABLE ks.t (pk bigint PRIMARY KEY, v1 bigint, v2 bigint)
 
-Nazwy keyspace'a i tabelki nie mają większego znaczenia.
+#### Creating schema
 
-#### Przygotowanie schemy
+Running benchmark with parameter --prepare prepares schema.
 
-Benchmark powinien udostępniać komendę która pozwala na postawienie keyspace'a i tabelki. W pomiarach nie chcemy uwzględniać czasu poświęconego na tworzenie ich.
+This allows to only measure the time spent on the request.
 
-### Tryby
+### Workloads
 
-Niech `T` = ilość operacji do wykonania.
+Let `T` = number of operations.
 
-Benchmark można uruchomić w jednym z trzech trybów:
+Benchmark can run in one of the three workloads:
 
-- write - każda komenda to zapis do tabelki:
+- write - each request is a write:
 
       INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)
 
-  Przy zapisywaniu do klucza `pk`, `v1` i `v2` powinny wynosić odpowiednio `2 * pk` i `3 * pk`.
+  Where the parameters `pk`, `v1` i `v2` for `pk` should be `2 * pk` i `3 * pk`.
 
-  W tym trybie, benchmark powinien wykonać jeden zapis dla każdego `pk ∈ [0, T)`. Kolejność zapisów nie ma znaczenia.
+  Here, the `pk` should be `pk ∈ [0, T)`. The order doesn't matter, there should be written for each possible value of `pk`.
 
-- read - każda komenda to odczyt z tabelki:
+- read - each request is a write::
 
       SELECT v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?
 
-  Po odczytaniu wiersza, benchmark powinien zweryfikować że `v1 == 2 * pk` i `v2 == 3 * pk`.
+  Here, the `pk` should be `pk ∈ [0, T)`. The order doesn't matter, there should be read for each possible value of `pk`.
 
-  W tym trybie, benchmark powinien wykonać jeden odczyt dla każdego `pk ∈ [0, T)`. Kolejność odczytów nie ma znaczenia.
+- mixed - each operation should be either write or read specified above.
 
-- mixed - każda operacja to albo zapis, albo odczyt, zdefiniowane jak w powyższych trybach.
-
-  Dla dla każdego `pk ∈ [0, T/2)`, wiersz powinien być zapisany, a potem od razu odczytany. Kolejność dla różnych `pk` nie ma znaczenia, ale dla konkretnego `pk` zapis powinien się odbyć przed odczytem.
-
-### Istniejące benchmarki
-
-Można się wzorować na następujących benchmarkach:
-
-- scylla-rust-driver: [link do brancha](https://github.com/psarna/scylla-rust-driver/tree/piodul/benchmark)
-- gocql: [link do repo](https://github.com/piodul/golang-bench)
