@@ -2,21 +2,17 @@
 extern crate anyhow;
 #[macro_use]
 extern crate cdrs;
-#[macro_use]
 extern crate cdrs_helpers_derive;
-#[macro_use]
 extern crate maplit;
 extern crate uuid;
 extern crate time;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+
 
 use anyhow::Result;
 use getopts::Options;
-// use scylla::frame::response::result::CQLValue;
-// use scylla::transport::session::Session;
-// use scylla::transport::Compression;
 use std::env;
-use std::sync::Arc;
-use tokio::sync::Semaphore;
 
 
 use cdrs::{
@@ -133,19 +129,15 @@ fn print_usage(program: &str, opts: Options) {
 
 
 fn setup_schema(session: CurrentSession, replication_factor: u32) -> Result<()> {
-    use std::time::Duration;
 
     let create_keyspace_text = format!("CREATE KEYSPACE IF NOT EXISTS ks_rust_scylla_bench WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': {}}}", replication_factor);
     session.query(create_keyspace_text).map(|_| (()));
-    // tokio::time::sleep(Duration::from_secs(1)).await;
 
     session.query("DROP TABLE IF EXISTS ks_rust_scylla_bench.t").map(|_| (()));
     
     session
         .query(
             "CREATE TABLE ks_rust_scylla_bench.t (pk bigint PRIMARY KEY, v1 bigint, v2 bigint)").map(|_| (()));
-
-    // tokio::time::sleep(Duration::from_secs(1)).await;
 
     println!("Schema set up!");
     Ok(())
@@ -167,18 +159,26 @@ impl RowStruct {
 
 fn run_bench(
     session: CurrentSession,
-    concurrency: u64,
+    concurrency: u64, // todo make async
     mut tasks: u64,
     workload: Workload,
 ) -> Result<()> {
+
     if workload == Workload::ReadsAndWrites {
         tasks /= 2;
     }
 
-    // let sem = Arc::new(Semaphore::new(concurrency as usize));
-    /*let session = Arc::new(session);*/
+    let sem = Arc::new(Semaphore::new(concurrency as usize));
+    let session = Arc::new(session);
 
     let mut prev_percent = -1;
+
+
+    let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
+    let stmt_insert = session.prepare(insert_struct_cql).expect("Prepare query error");
+    let slect_cql = "SELECT pk, v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?";
+    let stmt_select = session.prepare(slect_cql).expect("Prepare querry error");
+
 
     let mut i = 0;
     let batch_size = 256;
@@ -204,15 +204,15 @@ fn run_bench(
                             v1: 2 * i,
                             v2: 3 * i,
                         };
-                        let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
-                        session
-                            .query_with_values(insert_struct_cql, row.into_query_values())
-                            .expect("insert");
+
+                        session.exec_with_values(&stmt_insert, row.into_query_values()).expect("exec_with_values error");
                 }
 
                 if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
-                        let slect_cql = "SELECT pk, v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?";
-                        let rows = session.query_with_values(slect_cql, query_values!(i)).expect("query").get_body().expect("get body").into_rows().expect("into rows");
+                        let rows = session.exec_with_values(&stmt_insert, query_values!(i)).expect("exec_with_values error").get_body().expect("get body").into_rows().expect("into_rows");
+                        // let slect_cql = "SELECT pk, v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?";
+                        // let _rows = session.query_with_values(slect_cql, query_values!(i)).expect("query").get_body().expect("get body").into_rows().expect("into rows");
+                        // todo check rows
                 }
             }
 
