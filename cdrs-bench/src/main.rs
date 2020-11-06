@@ -4,46 +4,40 @@ extern crate anyhow;
 extern crate cdrs;
 extern crate cdrs_helpers_derive;
 extern crate maplit;
-extern crate uuid;
 extern crate time;
+extern crate uuid;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-
 
 use anyhow::Result;
 use getopts::Options;
 use std::env;
 
-
 use cdrs::{
-  authenticators::NoneAuthenticator,
-  cluster::{
-    session::{
-      new as new_session,
-      Session,
+    authenticators::NoneAuthenticator,
+    cluster::{
+        session::{new as new_session, Session},
+        ClusterTcpConfig, NodeTcpConfigBuilder, TcpConnectionPool,
     },
-    ClusterTcpConfig, NodeTcpConfigBuilder, TcpConnectionPool,
-  },
-  load_balancing::SingleNode,
-  query::*,
-  Result as CDRSResult,
+    load_balancing::SingleNode,
+    query::*,
+    Result as CDRSResult,
 };
 
 pub type CurrentSession = Session<SingleNode<TcpConnectionPool<NoneAuthenticator>>>;
 
 pub fn create_db_session() -> CDRSResult<CurrentSession> {
-  let auth = NoneAuthenticator;
-  let node = NodeTcpConfigBuilder::new("127.0.0.1:9042", auth).build();
-  let cluster_config = ClusterTcpConfig(vec![node]);
-  
-  new_session(&cluster_config, SingleNode::new())
+    let auth = NoneAuthenticator;
+    let node = NodeTcpConfigBuilder::new("127.0.0.1:9042", auth).build();
+    let cluster_config = ClusterTcpConfig(vec![node]);
+
+    new_session(&cluster_config, SingleNode::new())
 }
 
 fn connect_to_db() -> CurrentSession {
     let mut session = create_db_session().expect("create db session error");
     session
 }
-
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Workload {
@@ -94,8 +88,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let node = matches.opt_str("node").unwrap_or_else(|| "127.0.0.1:9042".to_owned());
-    
+    let node = matches
+        .opt_str("node")
+        .unwrap_or_else(|| "127.0.0.1:9042".to_owned());
 
     let concurrency = matches.opt_get_default("concurrency", 256)?;
     let tasks = matches.opt_get_default("tasks", 1_000_000u64)?;
@@ -108,11 +103,11 @@ async fn main() -> Result<()> {
         None => Workload::Writes,
         Some(c) => return Err(anyhow!("bad workload type: {}", c)),
     };
-    
+
     let mut session = connect_to_db();
 
     if matches.opt_present("prepare") {
-        setup_schema(session, replication_factor); 
+        setup_schema(session, replication_factor);
     } else {
         println!("Start benchmark");
         run_bench(session, concurrency, tasks, workload);
@@ -121,35 +116,32 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} FILE [options]", program);
     print!("{}", opts.usage(&brief));
 }
 
-
 fn setup_schema(session: CurrentSession, replication_factor: u32) -> Result<()> {
-
     let create_keyspace_text = format!("CREATE KEYSPACE IF NOT EXISTS ks_rust_scylla_bench WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': {}}}", replication_factor);
     session.query(create_keyspace_text).map(|_| (()));
 
-    session.query("DROP TABLE IF EXISTS ks_rust_scylla_bench.t").map(|_| (()));
-    
     session
-        .query(
-            "CREATE TABLE ks_rust_scylla_bench.t (pk bigint PRIMARY KEY, v1 bigint, v2 bigint)").map(|_| (()));
+        .query("DROP TABLE IF EXISTS ks_rust_scylla_bench.t")
+        .map(|_| (()));
+
+    session
+        .query("CREATE TABLE ks_rust_scylla_bench.t (pk bigint PRIMARY KEY, v1 bigint, v2 bigint)")
+        .map(|_| (()));
 
     println!("Schema set up!");
     Ok(())
 }
-
 
 struct RowStruct {
     pk: u64,
     v1: u64,
     v2: u64,
 }
-
 
 impl RowStruct {
     fn into_query_values(self) -> QueryValues {
@@ -163,7 +155,6 @@ fn run_bench(
     mut tasks: u64,
     workload: Workload,
 ) -> Result<()> {
-
     if workload == Workload::ReadsAndWrites {
         tasks /= 2;
     }
@@ -173,12 +164,12 @@ fn run_bench(
 
     let mut prev_percent = -1;
 
-
     let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
-    let stmt_insert = session.prepare(insert_struct_cql).expect("Prepare query error");
+    let stmt_insert = session
+        .prepare(insert_struct_cql)
+        .expect("Prepare query error");
     let slect_cql = "SELECT pk, v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?";
     let stmt_select = session.prepare(slect_cql).expect("Prepare querry error");
-
 
     let mut i = 0;
     let batch_size = 256;
@@ -189,32 +180,40 @@ fn run_bench(
         let curr_percent = (100 * i) / tasks;
         if prev_percent < curr_percent as i32 {
             prev_percent = curr_percent as i32;
-            
+
             println!("Progress: {}", curr_percent);
         }
 
         // let permit = sem.clone().acquire_owned().await;
-            let begin = i;
-            let end = std::cmp::min(begin + batch_size, tasks);
+        let begin = i;
+        let end = std::cmp::min(begin + batch_size, tasks);
 
-            for i in begin..end {
-                if workload == Workload::Writes || workload == Workload::ReadsAndWrites {
-                        let row = RowStruct {
-                            pk: i,
-                            v1: 2 * i,
-                            v2: 3 * i,
-                        };
+        for i in begin..end {
+            if workload == Workload::Writes || workload == Workload::ReadsAndWrites {
+                let row = RowStruct {
+                    pk: i,
+                    v1: 2 * i,
+                    v2: 3 * i,
+                };
 
-                        session.exec_with_values(&stmt_insert, row.into_query_values()).expect("exec_with_values error");
-                }
-
-                if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
-                        let rows = session.exec_with_values(&stmt_insert, query_values!(i)).expect("exec_with_values error").get_body().expect("get body").into_rows().expect("into_rows");
-                        // todo check rows
-                }
+                session
+                    .exec_with_values(&stmt_insert, row.into_query_values())
+                    .expect("exec_with_values error");
             }
 
-            // let _permit = permit;
+            if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
+                let rows = session
+                    .exec_with_values(&stmt_insert, query_values!(i))
+                    .expect("exec_with_values error")
+                    .get_body()
+                    .expect("get body")
+                    .into_rows()
+                    .expect("into_rows");
+                // todo check rows
+            }
+        }
+
+        // let _permit = permit;
 
         i += batch_size;
     }
