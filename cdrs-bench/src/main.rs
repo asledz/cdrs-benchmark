@@ -7,6 +7,7 @@ extern crate maplit;
 extern crate time;
 extern crate uuid;
 use std::sync::Arc;
+use std::thread;
 use tokio::sync::Semaphore;
 
 use anyhow::Result;
@@ -151,78 +152,71 @@ impl RowStruct {
 
 fn run_bench(
     session: CurrentSession,
-    concurrency: u64, // todo make async
+    concurrency: u64, 
     mut tasks: u64,
     workload: Workload,
 ) -> Result<()> {
+
     if workload == Workload::ReadsAndWrites {
         tasks /= 2;
     }
 
-    let sem = Arc::new(Semaphore::new(concurrency as usize));
-    let session = Arc::new(session);
-
     let mut prev_percent = -1;
 
     let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
-    let stmt_insert = session
-        .prepare(insert_struct_cql)
-        .expect("Prepare query error");
+    let stmt_insert = Arc::new(
+        session
+            .prepare(insert_struct_cql)
+            .expect("Prepare query error"),
+    );
     let slect_cql = "SELECT pk, v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?";
-    let stmt_select = session.prepare(slect_cql).expect("Prepare querry error");
+    let stmt_select = Arc::new(session.prepare(slect_cql).expect("Prepare querry error"));
 
     let mut i = 0;
     let batch_size = 256;
 
-    println!("tasks {}", tasks);
+    let mut children = vec![];
 
-    while i < tasks {
-        let curr_percent = (100 * i) / tasks;
-        if prev_percent < curr_percent as i32 {
-            prev_percent = curr_percent as i32;
+    let session = Arc::new(session);
 
-            println!("Progress: {}", curr_percent);
-        }
+    for i in 0..concurrency {
+        let my_session = session.clone();
+        let stmt_insert = stmt_insert.clone();
+        let stmt_select = stmt_select.clone();
 
-        // let permit = sem.clone().acquire_owned().await;
-        let begin = i;
-        let end = std::cmp::min(begin + batch_size, tasks);
+        children.push(thread::spawn(move || {
+            let mut j = i;
+            while j <= tasks {
+                println!("Thread: {} does task {}", i, j);
+                if workload == Workload::Writes || workload == Workload::ReadsAndWrites {
+                    let row = RowStruct {
+                        pk: j,
+                        v1: 2 * j,
+                        v2: 3 * j,
+                    };
 
-        for i in begin..end {
-            if workload == Workload::Writes || workload == Workload::ReadsAndWrites {
-                let row = RowStruct {
-                    pk: i,
-                    v1: 2 * i,
-                    v2: 3 * i,
-                };
+                    my_session
+                        .exec_with_values(&stmt_insert, row.into_query_values())
+                        .expect("exec_with_values error");
+                }
 
-                session
-                    .exec_with_values(&stmt_insert, row.into_query_values())
-                    .expect("exec_with_values error");
+                if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
+                    let rows = my_session
+                        .exec_with_values(&stmt_select, query_values!(j))
+                        .expect("exec_with_values error")
+                        .get_body()
+                        .expect("get body")
+                        .into_rows()
+                        .expect("into_rows");
+                }
+                j += concurrency;
             }
-
-            if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
-                let rows = session
-                    .exec_with_values(&stmt_insert, query_values!(i))
-                    .expect("exec_with_values error")
-                    .get_body()
-                    .expect("get body")
-                    .into_rows()
-                    .expect("into_rows");
-                // todo check rows
-            }
-        }
-
-        // let _permit = permit;
-
-        i += batch_size;
+        }));
     }
 
-    // Wait for all in-flight requests to finish
-    // for _ in 0..concurrency {
-    //     sem.acquire().await.forget();
-    // }
-
+    for child in children {
+        let _ = child.join();
+    }
     println!("Done!");
     Ok(())
 }
