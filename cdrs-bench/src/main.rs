@@ -210,8 +210,6 @@ fn run_bench(
 
                 if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
                         let rows = session.exec_with_values(&stmt_insert, query_values!(i)).expect("exec_with_values error").get_body().expect("get body").into_rows().expect("into_rows");
-                        // let slect_cql = "SELECT pk, v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?";
-                        // let _rows = session.query_with_values(slect_cql, query_values!(i)).expect("query").get_body().expect("get body").into_rows().expect("into rows");
                         // todo check rows
                 }
             }
