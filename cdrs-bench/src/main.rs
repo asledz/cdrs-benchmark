@@ -2,17 +2,18 @@
 extern crate anyhow;
 #[macro_use]
 extern crate cdrs;
+#[macro_use]
 extern crate cdrs_helpers_derive;
 extern crate maplit;
 extern crate time;
 extern crate uuid;
-use std::sync::Arc;
-use std::thread;
-use tokio::sync::Semaphore;
-
+use crate::cdrs::types::from_cdrs::FromCDRSByName;
 use anyhow::Result;
+use cdrs::types::prelude::TryFromRow;
 use getopts::Options;
 use std::env;
+use std::sync::Arc;
+use std::thread;
 
 use cdrs::{
     authenticators::NoneAuthenticator,
@@ -36,8 +37,7 @@ pub fn create_db_session() -> CDRSResult<CurrentSession> {
 }
 
 fn connect_to_db() -> CurrentSession {
-    let mut session = create_db_session().expect("create db session error");
-    session
+    create_db_session().expect("create db session error")
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let node = matches
+    let _node = matches
         .opt_str("node")
         .unwrap_or_else(|| "127.0.0.1:9042".to_owned());
 
@@ -105,13 +105,13 @@ async fn main() -> Result<()> {
         Some(c) => return Err(anyhow!("bad workload type: {}", c)),
     };
 
-    let mut session = connect_to_db();
+    let session = connect_to_db();
 
     if matches.opt_present("prepare") {
-        setup_schema(session, replication_factor);
+        setup_schema(session, replication_factor)?;
     } else {
         println!("Start benchmark");
-        run_bench(session, concurrency, tasks, workload);
+        run_bench(session, concurrency, tasks, workload)?;
     }
 
     Ok(())
@@ -124,24 +124,23 @@ fn print_usage(program: &str, opts: Options) {
 
 fn setup_schema(session: CurrentSession, replication_factor: u32) -> Result<()> {
     let create_keyspace_text = format!("CREATE KEYSPACE IF NOT EXISTS ks_rust_scylla_bench WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': {}}}", replication_factor);
-    session.query(create_keyspace_text).map(|_| (()));
+    session.query(create_keyspace_text)?;
 
-    session
-        .query("DROP TABLE IF EXISTS ks_rust_scylla_bench.t")
-        .map(|_| (()));
+    session.query("DROP TABLE IF EXISTS ks_rust_scylla_bench.t")?;
 
-    session
-        .query("CREATE TABLE ks_rust_scylla_bench.t (pk bigint PRIMARY KEY, v1 bigint, v2 bigint)")
-        .map(|_| (()));
+    session.query(
+        "CREATE TABLE ks_rust_scylla_bench.t (pk bigint PRIMARY KEY, v1 bigint, v2 bigint)",
+    )?;
 
     println!("Schema set up!");
     Ok(())
 }
 
+#[derive(Debug, TryFromRow)]
 struct RowStruct {
-    pk: u64,
-    v1: u64,
-    v2: u64,
+    pk: i64,
+    v1: i64,
+    v2: i64,
 }
 
 impl RowStruct {
@@ -152,16 +151,13 @@ impl RowStruct {
 
 fn run_bench(
     session: CurrentSession,
-    concurrency: u64, 
+    concurrency: u64,
     mut tasks: u64,
     workload: Workload,
 ) -> Result<()> {
-
     if workload == Workload::ReadsAndWrites {
         tasks /= 2;
     }
-
-    let mut prev_percent = -1;
 
     let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
     let stmt_insert = Arc::new(
@@ -172,8 +168,7 @@ fn run_bench(
     let slect_cql = "SELECT pk, v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?";
     let stmt_select = Arc::new(session.prepare(slect_cql).expect("Prepare querry error"));
 
-    let mut i = 0;
-    let batch_size = 256;
+    let _batch_size = 256;
 
     let mut children = vec![];
 
@@ -190,9 +185,9 @@ fn run_bench(
                 println!("Thread: {} does task {}", i, j);
                 if workload == Workload::Writes || workload == Workload::ReadsAndWrites {
                     let row = RowStruct {
-                        pk: j,
-                        v1: 2 * j,
-                        v2: 3 * j,
+                        pk: j as i64,
+                        v1: 2 * j as i64,
+                        v2: 3 * j as i64,
                     };
 
                     my_session
@@ -208,6 +203,15 @@ fn run_bench(
                         .expect("get body")
                         .into_rows()
                         .expect("into_rows");
+
+                    for row in rows {
+                        let my_row: RowStruct =
+                            RowStruct::try_from_row(row).expect("into RowStruct");
+
+                        assert_eq!(my_row.pk, j as i64);
+                        assert_eq!(my_row.v1, 2 * j as i64);
+                        assert_eq!(my_row.v2, 3 * j as i64);
+                    }
                 }
                 j += concurrency;
             }
