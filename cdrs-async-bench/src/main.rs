@@ -6,13 +6,15 @@ use getopts::Options;
 use std::env;
 use std::sync::Arc;
 
-use cdrs_async::{authenticators::NoneAuthenticator, query::QueryExecutor, Compression, Session, TransportTcp};
-use cassandra_proto::{query::QueryValues, types::value::Value};
-use std::pin::Pin;
 use async_std::sync::Mutex;
+use cassandra_proto::{query::QueryValues, types::value::Value};
+use cdrs_async::{
+    authenticators::NoneAuthenticator, query::QueryExecutor, Compression, Session, TransportTcp,
+};
 use std::collections::HashMap;
+use std::pin::Pin;
 // TODO - find better semaphore for async_std because this one doesnt have acquire_owned() :(
-use async_weighted_semaphore::Semaphore; 
+use async_weighted_semaphore::Semaphore;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Workload {
@@ -86,13 +88,10 @@ fn main() {
         };
 
         let authenticator_strategy = NoneAuthenticator {};
-        let session = Session::connect(
-            "127.0.0.1:9042",
-            compression,
-            authenticator_strategy.into(),
-        )
-        .await
-        .expect("session connect failed!");
+        let session =
+            Session::connect("127.0.0.1:9042", compression, authenticator_strategy.into())
+                .await
+                .expect("session connect failed!");
 
         if matches.opt_present("prepare") {
             setup_schema(session, replication_factor).await?;
@@ -100,7 +99,7 @@ fn main() {
             run_bench(session, concurrency, tasks, workload).await?;
         }
 
-       Ok(())
+        Ok(())
     });
 }
 
@@ -108,16 +107,18 @@ async fn setup_schema(mut session: Session<TransportTcp>, replication_factor: u3
     use std::time::Duration;
 
     let create_keyspace_text = format!("CREATE KEYSPACE IF NOT EXISTS ks_rust_scylla_bench WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': {}}}", replication_factor);
-    
-    Pin::new(&mut session).query(create_keyspace_text).await ?;
+
+    Pin::new(&mut session).query(create_keyspace_text).await?;
     async_std::task::sleep(Duration::from_secs(1)).await;
-    
-    Pin::new(&mut session).query("DROP TABLE IF EXISTS ks_rust_scylla_bench.t").await ?;
+
+    Pin::new(&mut session)
+        .query("DROP TABLE IF EXISTS ks_rust_scylla_bench.t")
+        .await?;
     async_std::task::sleep(Duration::from_secs(1)).await;
 
     Pin::new(&mut session)
         .query("CREATE TABLE ks_rust_scylla_bench.t (pk bigint PRIMARY KEY, v1 bigint, v2 bigint)")
-        .await ?;
+        .await?;
     async_std::task::sleep(Duration::from_secs(1)).await;
 
     println!("Schema set up!");
@@ -171,15 +172,17 @@ async fn run_bench(
                     let query_values = {
                         let mut values_map: HashMap<String, Value> = HashMap::new();
                         values_map.insert("pk".to_string(), Value::from(i));
-                        values_map.insert("v1".to_string(), Value::from(2*i));
-                        values_map.insert("v2".to_string(), Value::from(3*i));
+                        values_map.insert("v1".to_string(), Value::from(2 * i));
+                        values_map.insert("v2".to_string(), Value::from(3 * i));
                         QueryValues::NamedValues(values_map)
                     };
-                    
+
                     let locked_session: &mut Session<TransportTcp> = &mut *session.lock().await;
-                    let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
-                    let query_future = Pin::new(locked_session).query_with_values(insert_struct_cql, query_values);
-                    
+                    let insert_struct_cql =
+                        "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
+                    let query_future =
+                        Pin::new(locked_session).query_with_values(insert_struct_cql, query_values);
+
                     /* This is impossible because .await still uses the lock()
                     // That means no multiple streams possible??
                     let query_future = {
@@ -190,13 +193,13 @@ async fn run_bench(
                     */
 
                     let result = query_future.await;
-                    
+
                     if result.is_err() {
                         eprintln!("Error: {:?}", result.unwrap_err());
                         continue; // The row may not be available for reading, so skip
                     }
                 }
-                
+
                 /*
                 if workload == Workload::Reads || workload == Workload::ReadsAndWrites {
                     let result = session.execute(&stmt_read, &scylla::values!(i)).await;

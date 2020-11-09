@@ -21,23 +21,29 @@ use cdrs::{
         session::{new as new_session, Session},
         ClusterTcpConfig, NodeTcpConfigBuilder, TcpConnectionPool,
     },
-    load_balancing::SingleNode,
+    load_balancing::RoundRobin,
     query::*,
     Result as CDRSResult,
 };
 
-pub type CurrentSession = Session<SingleNode<TcpConnectionPool<NoneAuthenticator>>>;
+pub type CurrentSession = Session<RoundRobin<TcpConnectionPool<NoneAuthenticator>>>;
 
-pub fn create_db_session() -> CDRSResult<CurrentSession> {
-    let auth = NoneAuthenticator;
-    let node = NodeTcpConfigBuilder::new("127.0.0.1:9042", auth).build();
-    let cluster_config = ClusterTcpConfig(vec![node]);
+pub fn create_db_session(nodes: Vec<String>) -> CDRSResult<CurrentSession> {
+    let node_configs = nodes
+        .iter()
+        .map(|addr| {
+            NodeTcpConfigBuilder::new(addr, NoneAuthenticator)
+                .max_size(100)
+                .build()
+        })
+        .collect();
 
-    new_session(&cluster_config, SingleNode::new())
+    let cluster_config = ClusterTcpConfig(node_configs);
+    new_session(&cluster_config, RoundRobin::new())
 }
 
-fn connect_to_db() -> CurrentSession {
-    create_db_session().expect("create db session error")
+fn connect_to_db(nodes: Vec<String>) -> CurrentSession {
+    create_db_session(nodes).expect("create db session error")
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -47,13 +53,12 @@ enum Workload {
     ReadsAndWrites,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     let program = args[0].clone();
 
     let mut opts = Options::new();
-    opts.optopt("", "node", "cluster contact node", "ADDRESS");
+    opts.optopt("", "nodes", "comma-separated addresses of nodes to use", "ADDRESSES");
     opts.optopt("", "concurrency", "workload concurrency", "COUNT");
     opts.optopt("", "tasks", "task count", "COUNT");
     opts.optopt("", "replication-factor", "replication factor", "FACTOR");
@@ -89,9 +94,14 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let _node = matches
-        .opt_str("node")
-        .unwrap_or_else(|| "127.0.0.1:9042".to_owned());
+    let nodes = matches
+        .opt_str("nodes")
+        .unwrap_or_else(|| "127.0.0.1:9042".to_owned())
+        .split(',')
+        .map(str::to_string)
+        .collect::<Vec<String>>();
+
+    let node_count = nodes.len();
 
     let concurrency = matches.opt_get_default("concurrency", 256)?;
     let tasks = matches.opt_get_default("tasks", 1_000_000u64)?;
@@ -105,13 +115,13 @@ async fn main() -> Result<()> {
         Some(c) => return Err(anyhow!("bad workload type: {}", c)),
     };
 
-    let session = connect_to_db();
+    let session = connect_to_db(nodes);
 
     if matches.opt_present("prepare") {
         setup_schema(session, replication_factor)?;
     } else {
         println!("Start benchmark");
-        run_bench(session, concurrency, tasks, workload)?;
+        run_bench(session, concurrency, tasks, workload, node_count)?;
     }
 
     Ok(())
@@ -154,18 +164,29 @@ fn run_bench(
     concurrency: u64,
     mut tasks: u64,
     workload: Workload,
+    node_count: usize,
 ) -> Result<()> {
     if workload == Workload::ReadsAndWrites {
         tasks /= 2;
     }
 
     let insert_struct_cql = "INSERT INTO ks_rust_scylla_bench.t (pk, v1, v2) VALUES (?, ?, ?)";
+    for _ in 0..node_count {
+        // Workaround: cdrs does not prepare statements on all nodes, so we need to do it manally
+        // Each time, round-robin policy will assign a different node
+        session
+            .prepare(insert_struct_cql)
+            .expect("Prepare querry error");
+    }
     let stmt_insert = Arc::new(
         session
             .prepare(insert_struct_cql)
             .expect("Prepare query error"),
     );
     let slect_cql = "SELECT pk, v1, v2 FROM ks_rust_scylla_bench.t WHERE pk = ?";
+    for _ in 0..node_count {
+        session.prepare(slect_cql).expect("Prepare querry error");
+    }
     let stmt_select = Arc::new(session.prepare(slect_cql).expect("Prepare querry error"));
 
     let _batch_size = 256;
@@ -182,7 +203,6 @@ fn run_bench(
         children.push(thread::spawn(move || {
             let mut j = i;
             while j <= tasks {
-                println!("Thread: {} does task {}", i, j);
                 if workload == Workload::Writes || workload == Workload::ReadsAndWrites {
                     let row = RowStruct {
                         pk: j as i64,
